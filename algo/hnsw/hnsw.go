@@ -1,6 +1,7 @@
 package hnsw
 
 import (
+	"fmt"
 	"math"
 	"math/rand"
 	"time"
@@ -48,6 +49,18 @@ type neighbor struct {
 	dis float32
 }
 
+func (h *HNSW) Stat() {
+	arr := make([]int, h.maxLayer+1)
+	for _, n := range h.neighbors {
+		arr[len(n)-1]++
+	}
+	cnt := 0
+	for i := len(arr) - 1; i >= 0; i-- {
+		cnt += arr[i]
+		fmt.Printf("layer id: [%v],\tnode count: [%v]\n", i, cnt)
+	}
+}
+
 func BuildHNSW(m, efCons int, mode Mode, disType distance.Type) *HNSW {
 	return &HNSW{
 		efCons:     efCons,
@@ -66,9 +79,10 @@ func (h *HNSW) Insert(vector []float32) {
 		Vector: vector,
 	}
 	h.docs = append(h.docs, newDoc)
-	maxLayerForNew := int(math.Floor(-math.Log(h.rand.Float64() * h.normFactor)))
-	h.neighbors[newDoc.Id] = make([][]*neighbor, maxLayerForNew)
+	maxLayerForNew := int(math.Floor(-math.Log(h.rand.Float64()) * h.normFactor))
+	h.neighbors = append(h.neighbors, make([][]*neighbor, maxLayerForNew+1))
 	if h.entryPoint == nil {
+		h.maxLayer = maxLayerForNew
 		h.entryPoint = newDoc
 		return
 	}
@@ -77,22 +91,23 @@ func (h *HNSW) Insert(vector []float32) {
 		entryPoint = h.searchAtLayerWith1Ef(vector, entryPoint, curLayer)
 	}
 
-	for curLayer := maxLayerForNew; curLayer >= 0; curLayer-- {
+	for curLayer := util.Min(maxLayerForNew, h.maxLayer); curLayer >= 0; curLayer-- {
 		docs := h.searchAtLayer(vector, entryPoint, h.efCons, curLayer)
+		docs = h.shrinkSortedDocs(docs, curLayer)
+		entryPoint = docs[0]
 		for _, doc := range docs {
 			// add bidirectional connection
 			h.connect(newDoc, doc, curLayer)
 		}
 	}
 
-	if len(h.neighbors[newDoc.Id]) > h.maxLayer {
-		h.maxLayer = len(h.neighbors[newDoc.Id])
+	if maxLayerForNew > h.maxLayer {
+		h.maxLayer = maxLayerForNew
 		h.entryPoint = newDoc
 	}
 }
 
 func (h *HNSW) searchAtLayer(query []float32, enterPoint *data.Doc, ef, layer int) []*data.Doc {
-	visited := make(map[int32]struct{})
 	candidates, result := util.NewMinHeap(), util.NewMaxHeap()
 	ele := &data.Element{
 		Doc:      enterPoint,
@@ -100,6 +115,7 @@ func (h *HNSW) searchAtLayer(query []float32, enterPoint *data.Doc, ef, layer in
 	}
 	candidates.Push(ele)
 	result.Push(ele)
+	visited := map[int32]struct{}{enterPoint.Id: {}}
 	for candidates.Size() > 0 {
 		candidate := candidates.Pop().(*data.Element)
 		if candidate.Distance > result.Top().GetValue() {
@@ -123,17 +139,22 @@ func (h *HNSW) searchAtLayer(query []float32, enterPoint *data.Doc, ef, layer in
 			}
 		}
 	}
-	return nil
+	list := make([]*data.Doc, result.Size())
+	for i := result.Size() - 1; result.Size() > 0; i-- {
+		list[i] = result.Pop().(*data.Element).Doc
+	}
+	return list
 }
 
 func (h *HNSW) connect(doc1, doc2 *data.Doc, layer int) {
 	dis := h.disFunc(doc1.Vector, doc2.Vector)
 	// add bidirectional connection
-	h.addNeighbor(layer, h.neighbors[doc1.Id][layer], &neighbor{
+	maxCnt := h.getMaxNeighborCnt(layer)
+	h.addNeighbor(maxCnt, layer, h.neighbors[doc1.Id], &neighbor{
 		doc: doc2,
 		dis: dis,
 	})
-	h.addNeighbor(layer, h.neighbors[doc2.Id][layer], &neighbor{
+	h.addNeighbor(maxCnt, layer, h.neighbors[doc2.Id], &neighbor{
 		doc: doc1,
 		dis: dis,
 	})
@@ -141,8 +162,8 @@ func (h *HNSW) connect(doc1, doc2 *data.Doc, layer int) {
 
 func (h *HNSW) searchAtLayerWith1Ef(query []float32, enterPoint *data.Doc, layer int) *data.Doc {
 	maxDis := h.disFunc(enterPoint.Vector, query)
-	findBetter := false
-	for !findBetter {
+	for {
+		findBetter := false
 		for _, n := range h.neighbors[enterPoint.Id][layer] {
 			dis := h.disFunc(query, n.doc.Vector)
 			if dis < maxDis {
@@ -151,30 +172,53 @@ func (h *HNSW) searchAtLayerWith1Ef(query []float32, enterPoint *data.Doc, layer
 				findBetter = true
 			}
 		}
+		if !findBetter {
+			break
+		}
 	}
 	return enterPoint
 }
 
-func (h *HNSW) addNeighbor(maxCnt int, neighbors []*neighbor, newNeighbor *neighbor) {
+func (h *HNSW) shrinkSortedDocs(docs []*data.Doc, layer int) []*data.Doc {
+	maxCnt := util.Min(h.getMaxNeighborCnt(layer), len(docs))
+	if h.mode == Simple {
+		return docs[:maxCnt]
+	}
+	return docs
+	// todo heuristic
+}
+
+func (h *HNSW) addNeighbor(maxCnt, layer int, neighbors [][]*neighbor, newNeighbor *neighbor) {
 	if h.mode == Simple {
 		// h.neighbors[curDoc.Id][layer] is sorted
-		neighbors = append(neighbors, newNeighbor)
-		idx := len(neighbors) - 1
-		for i := len(neighbors) - 2; i >= 0; i-- {
-			if newNeighbor.dis > neighbors[i].dis {
+		neighbors[layer] = append(neighbors[layer], newNeighbor)
+		idx := len(neighbors[layer]) - 1
+		for i := len(neighbors[layer]) - 2; i >= 0; i-- {
+			if newNeighbor.dis >= neighbors[layer][i].dis {
 				break
 			}
-			neighbors[i], neighbors[idx] = neighbors[idx], neighbors[i]
+			neighbors[layer][i], neighbors[layer][idx] = neighbors[layer][idx], neighbors[layer][i]
 			idx = i
 		}
-		if len(neighbors) > maxCnt {
-			neighbors = neighbors[0 : len(neighbors)-1]
+		if len(neighbors[layer]) > maxCnt {
+			neighbors[layer] = neighbors[layer][0 : len(neighbors[layer])-1]
 		}
 	}
 	// todo heuristic
 }
 
 func (h *HNSW) SearchKNN(query []float32, ef, k int) []*data.Doc {
+	entryPoint := h.entryPoint
+	for layer := h.maxLayer; layer > 0; layer-- {
+		entryPoint = h.searchAtLayerWith1Ef(query, entryPoint, layer)
+	}
+	list := h.searchAtLayer(query, entryPoint, ef, 0)
+	return list[:k]
+}
 
-	return nil
+func (h *HNSW) getMaxNeighborCnt(layer int) int {
+	if layer == 0 {
+		return h.m0
+	}
+	return h.m
 }

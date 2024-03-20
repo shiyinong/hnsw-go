@@ -15,13 +15,11 @@ type NSW struct {
 	// id of doc
 	links [][]int32
 	// count of node neighbors
-	f int
-	// search count, default 1. more large of w, more precise of recall
-	w       int
+	f       int
 	disFunc func(vec1, vec2 []float32) float32
 }
 
-func BuildNSW(docs []*data.Doc, w, f int, disType distance.Type) *NSW {
+func BuildNSW(docs []*data.Doc, f int, disType distance.Type) *NSW {
 	if len(docs) == 0 {
 		panic("data is nil")
 	}
@@ -29,7 +27,6 @@ func BuildNSW(docs []*data.Doc, w, f int, disType distance.Type) *NSW {
 	nsw := &NSW{
 		docs:    make([]*data.Doc, 0, docCount),
 		links:   make([][]int32, docCount),
-		w:       w,
 		f:       f,
 		disFunc: distance.FuncMap[disType],
 	}
@@ -37,7 +34,7 @@ func BuildNSW(docs []*data.Doc, w, f int, disType distance.Type) *NSW {
 	for _, curDoc := range docs {
 		neighbors := nsw.docs
 		if len(nsw.docs) > nsw.f {
-			neighbors = nsw.SearchKNN(curDoc.Vector, nsw.f, nsw.w)
+			neighbors = nsw.SearchKNN(curDoc.Vector, nsw.f)
 		}
 		nsw.docs = append(nsw.docs, curDoc)
 		for _, neighbor := range neighbors {
@@ -52,7 +49,7 @@ func BuildNSW(docs []*data.Doc, w, f int, disType distance.Type) *NSW {
 	return nsw
 }
 
-func (n *NSW) SearchKNN(query []float32, k, m int) []*data.Doc {
+func (n *NSW) SearchKNN(query []float32, k int) []*data.Doc {
 	/*
 		1. build a min heap named candidates, build a max heap(size: k) named results.
 		2. get an entry Node by random, put it to the candidates and results.
@@ -61,36 +58,33 @@ func (n *NSW) SearchKNN(query []float32, k, m int) []*data.Doc {
 	*/
 	visited := map[int32]struct{}{}
 	results, candidates := util.NewMaxHeap(), util.NewMinHeap()
-	for i := 0; i < m; i++ {
-		//entry := n.docs[0]
-		entry := n.docs[rand.Int31n(int32(len(n.docs)))]
-		entryEle := &data.Element{
-			Doc:      entry,
-			Distance: n.disFunc(entry.Vector, query),
+	entry := n.docs[rand.Int31n(int32(len(n.docs)))]
+	entryEle := &data.Element{
+		Doc:      entry,
+		Distance: n.disFunc(entry.Vector, query),
+	}
+	candidates.Push(entryEle)
+	for candidates.Size() > 0 {
+		cur := candidates.Pop().(*data.Element)
+		if results.Size() > 0 && cur.Distance > results.Top().GetValue() {
+			break
 		}
-		candidates.Push(entryEle)
-		for candidates.Size() > 0 {
-			cur := candidates.Pop().(*data.Element)
-			if results.Size() > 0 && cur.Distance > results.Top().GetValue() {
-				break
+		for _, neighborIdx := range n.links[cur.Doc.Id] {
+			neighbor := n.docs[neighborIdx]
+			if _, ok := visited[neighbor.Id]; ok {
+				continue
 			}
-			for _, neighborIdx := range n.links[cur.Doc.Id] {
-				neighbor := n.docs[neighborIdx]
-				if _, ok := visited[neighbor.Id]; ok {
-					continue
-				}
-				visited[neighbor.Id] = struct{}{}
-				ele := &data.Element{
-					Doc:      neighbor,
-					Distance: n.disFunc(neighbor.Vector, query),
-				}
-				if results.Size() < k {
-					results.Push(ele)
-					candidates.Push(ele)
-				} else if results.Top().GetValue() > ele.Distance {
-					results.PopAndPush(ele)
-					candidates.Push(ele)
-				}
+			visited[neighbor.Id] = struct{}{}
+			ele := &data.Element{
+				Doc:      neighbor,
+				Distance: n.disFunc(neighbor.Vector, query),
+			}
+			if results.Size() < k {
+				results.Push(ele)
+				candidates.Push(ele)
+			} else if results.Top().GetValue() > ele.Distance {
+				results.PopAndPush(ele)
+				candidates.Push(ele)
 			}
 		}
 	}
