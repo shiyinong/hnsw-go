@@ -1,0 +1,1 @@
+GO implementation of NSW
