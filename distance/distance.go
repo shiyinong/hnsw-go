@@ -4,10 +4,10 @@ import (
 	"fmt"
 )
 
-type Type string
+type Type int32
 
 const (
-	L2 Type = "L2Distance"
+	L2 Type = 0
 )
 
 var (

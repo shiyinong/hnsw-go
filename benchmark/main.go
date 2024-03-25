@@ -8,47 +8,79 @@ import (
 	"github.com/shiyinong/hnsw-go/algo/brute_force"
 	"github.com/shiyinong/hnsw-go/algo/hnsw"
 	"github.com/shiyinong/hnsw-go/algo/nsw"
+	"github.com/shiyinong/hnsw-go/benchmark/hnsw_wrap"
 	"github.com/shiyinong/hnsw-go/data"
 	"github.com/shiyinong/hnsw-go/distance"
 )
 
-func buildHnsw(docs []*data.Doc) *hnsw.HNSW {
-	hnswIdx := hnsw.BuildHNSW(*hnswM, *hnswEfCons, 0, disType)
-	start := time.Now()
+func buildHnsw() {
+	docs := data.BuildAllDoc(int32(*dim), int32(*dataCount))
+	hnswIdx := hnsw.BuildHNSW(int32(*hnswM), int32(*hnswEfCons), hnsw.Mode(*hnswMode), disType)
+	start, s1 := time.Now(), time.Now()
 	for i, doc := range docs {
-		hnswIdx.Insert(doc.Vector)
+		hnswIdx.Insert(doc)
 		if (i+1)%10000 == 0 {
-			fmt.Printf("HNSW index insert count: [%v], cost time: [%v]\n", i+1, time.Since(start))
-			start = time.Now()
+			fmt.Printf("HNSW index insert count: [%v], cost time: [%v]\n", i+1, time.Since(s1))
+			s1 = time.Now()
 		}
 	}
-	return hnswIdx
+	fmt.Printf("HNSW build index cost time: [%v]\n", time.Since(start))
+	fmt.Printf("HNSW insertion avg compution cnt: [%v]\n", int(hnswIdx.ComputeCnt)/len(docs))
+
+	nswIdx := nsw.BuildNSW(docs, int32(*nswF), disType)
+	testDocs := data.BuildAllDoc(int32(*dim), int32(*testCount))
+	bfRes := testBruteForce(docs, testDocs)
+	wrap := &hnsw_wrap.HnswWrap{
+		Hnsw:     hnswIdx,
+		Nsw:      nswIdx,
+		TestData: testDocs,
+		TopK:     bfRes,
+	}
+	hnsw_wrap.SaveHnswWrap(wrap, *hnswFilaPath)
 }
 
-func testHnsw(docs []*data.Doc, hnswIdx *hnsw.HNSW) [][]*data.Doc {
-	res := [][]*data.Doc{}
-	for i := 0; i < len(docs); i++ {
-		knn := hnswIdx.SearchKNN(docs[i].Vector, *hnswEf, *k)
-		res = append(res, knn)
+func testHnsw() {
+	wrap := hnsw_wrap.LoadHnswWrap(*hnswFilaPath)
+	wrap.Hnsw.Ef = int32(*hnswEf)
+	hnswRes, nswRes := [][]*data.Doc{}, [][]*data.Doc{}
+	start := time.Now()
+	for _, doc := range wrap.TestData {
+		knn := wrap.Nsw.SearchKNN(doc.Vector, int32(*k))
+		nswRes = append(nswRes, knn)
 	}
-	return res
+	cost := time.Since(start).Milliseconds()
+	fmt.Println("--------------- NSW ------------------")
+	compare(wrap.TopK, nswRes)
+	fmt.Printf("NSW query performance: [%.2f ms / query], ", float64(cost)/float64(len(wrap.TestData)))
+	fmt.Printf("[%0.f queries / second]\n", 1000*float64(len(wrap.TestData))/float64(cost))
+	fmt.Printf("NSW query avg compution cnt: [%v]\n", int(wrap.Nsw.ComputeCnt)/len(wrap.TestData))
+	wrap.Nsw.Stat()
+
+	start = time.Now()
+	for _, doc := range wrap.TestData {
+		knn := wrap.Hnsw.SearchKNN(doc.Vector, int32(*hnswEf), int32(*k))
+		hnswRes = append(hnswRes, knn)
+	}
+	cost = time.Since(start).Milliseconds()
+	fmt.Println("--------------- HNSW ------------------")
+	compare(wrap.TopK, hnswRes)
+	fmt.Printf("HNSW query performance: [%.2f ms / query], ", float64(cost)/float64(len(wrap.TestData)))
+	fmt.Printf("[%0.f queries / second]\n", 1000*float64(len(wrap.TestData))/float64(cost))
+	fmt.Printf("HNSW query avg compution cnt: [%v]\n", int(wrap.Hnsw.ComputeCnt)/len(wrap.TestData))
+	wrap.Hnsw.Stat()
 }
 
-func testNsw(docs []*data.Doc, nswIdx *nsw.NSW) [][]*data.Doc {
+func testBruteForce(docs, testDocs []*data.Doc) [][]*data.Doc {
+	start := time.Now()
+	bf := &brute_force.Searcher{Docs: docs}
 	res := [][]*data.Doc{}
-	for i := 0; i < len(docs); i++ {
-		knn := nswIdx.SearchKNN(docs[i].Vector, *k)
+	for i := 0; i < len(testDocs); i++ {
+		knn := bf.Query(testDocs[i].Vector, int32(*k), disType)
 		res = append(res, knn)
 	}
-	return res
-}
-
-func testBruteForce(docs []*data.Doc, bf *brute_force.Searcher) [][]*data.Doc {
-	res := [][]*data.Doc{}
-	for i := 0; i < len(docs); i++ {
-		knn := bf.Query(docs[i].Vector, int32(*k), disType)
-		res = append(res, knn)
-	}
+	cost := time.Since(start).Milliseconds()
+	fmt.Printf("Brute Force query performance: [%.2f ms / query], ", float64(cost)/float64(len(testDocs)))
+	fmt.Printf("[%0.f queries / second]\n", 1000*float64(len(testDocs))/float64(cost))
 	return res
 }
 
@@ -66,7 +98,7 @@ func compare(res1, res2 [][]*data.Doc) {
 			}
 		}
 	}
-	fmt.Printf("recall rate: [%.2f%%]\n", 100*float64(hitCount)/float64(allCount))
+	fmt.Printf("recall rate: [%.4f%%]\n", 100*float64(hitCount)/float64(allCount))
 }
 
 const (
@@ -74,45 +106,30 @@ const (
 )
 
 var (
-	dim       = flag.Int("d", 16, "")
+	dim       = flag.Int("d", 8, "")
 	k         = flag.Int("k", 10, "")
 	dataCount = flag.Int("count", 100000, "")
 	testCount = flag.Int("test_count", 1000, "")
+	operation = flag.String("operation", "", "")
 
-	hnswM      = flag.Int("hnsw_m", 6, "")
-	hnswEf     = flag.Int("hnsw_ef", 64, "")
-	hnswEfCons = flag.Int("hnsw_ef_cons", 64, "")
+	nswF = flag.Int("nsw_f", 20, "")
+
+	hnswM        = flag.Int("hnsw_m", 6, "")
+	hnswEf       = flag.Int("hnsw_ef", 64, "")
+	hnswEfCons   = flag.Int("hnsw_ef_cons", 32, "")
+	hnswMode     = flag.Int("hnsw_mode", 1, "")
+	hnswFilaPath = flag.String("hnsw_file_path", "./hnsw_8d.data", "")
 )
 
 func main() {
 	flag.Parse()
-	dataDocs := data.BuildAllDoc(int32(*dim), int32(*dataCount))
-	testDocs := data.BuildAllDoc(int32(*dim), int32(*testCount))
 
-	bf := &brute_force.Searcher{Docs: dataDocs}
-	start := time.Now()
-
-	bfRes := testBruteForce(testDocs, bf)
-	fmt.Printf("BF query cost: [%v]\n", time.Since(start))
-	//
-	//start = time.Now()
-	//nswIdx := nsw.BuildNSW(dataDocs, (*dim)*2, disType)
-	//fmt.Println("\n-------------- NSW --------------")
-	//fmt.Printf("build NSW index cost: [%v]\n", time.Since(start))
-	//
-	//start = time.Now()
-	//nswRes := testNsw(testDocs, nswIdx)
-	//fmt.Printf("NSW query cost: [%v]\n", time.Since(start))
-	//compare(bfRes, nswRes)
-
-	start = time.Now()
-	hnswIdx := buildHnsw(dataDocs)
-	fmt.Println("\n-------------- HNSW --------------")
-	fmt.Printf("build HNSW index cost: [%v]\n", time.Since(start))
-
-	start = time.Now()
-	hnswRes := testHnsw(testDocs, hnswIdx)
-	fmt.Printf("HNSW query cost: [%v]\n", time.Since(start))
-	compare(bfRes, hnswRes)
-	hnswIdx.Stat()
+	if *operation == "only_build" {
+		buildHnsw()
+	} else if *operation == "only_test" {
+		testHnsw()
+	} else {
+		buildHnsw()
+		testHnsw()
+	}
 }

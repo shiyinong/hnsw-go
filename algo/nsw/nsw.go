@@ -11,45 +11,56 @@ import (
 )
 
 type NSW struct {
-	docs []*data.Doc
+	Docs []*data.Doc
 	// id of doc
-	links [][]int32
+	Links [][]int32
 	// count of node neighbors
-	f       int
-	disFunc func(vec1, vec2 []float32) float32
+	F          int32
+	DisFunc    func(vec1, vec2 []float32) float32
+	ComputeCnt int64
 }
 
-func BuildNSW(docs []*data.Doc, f int, disType distance.Type) *NSW {
+func (n *NSW) Stat() {
+	cnt := 0
+	for _, link := range n.Links {
+		cnt += len(link)
+	}
+	fmt.Printf("NSW node avg neighbors count: [%v]\n", cnt/len(n.Docs))
+}
+
+func BuildNSW(docs []*data.Doc, f int32, disType distance.Type) *NSW {
 	if len(docs) == 0 {
 		panic("data is nil")
 	}
 	docCount := len(docs)
 	nsw := &NSW{
-		docs:    make([]*data.Doc, 0, docCount),
-		links:   make([][]int32, docCount),
-		f:       f,
-		disFunc: distance.FuncMap[disType],
+		Docs:    make([]*data.Doc, 0, docCount),
+		Links:   make([][]int32, docCount),
+		F:       f,
+		DisFunc: distance.FuncMap[disType],
 	}
-	start := time.Now()
+	start, s1 := time.Now(), time.Now()
 	for _, curDoc := range docs {
-		neighbors := nsw.docs
-		if len(nsw.docs) > nsw.f {
-			neighbors = nsw.SearchKNN(curDoc.Vector, nsw.f)
+		neighbors := nsw.Docs
+		if len(nsw.Docs) > int(nsw.F) {
+			neighbors = nsw.SearchKNN(curDoc.Vector, nsw.F)
 		}
-		nsw.docs = append(nsw.docs, curDoc)
+		nsw.Docs = append(nsw.Docs, curDoc)
 		for _, neighbor := range neighbors {
-			nsw.links[neighbor.Id] = append(nsw.links[neighbor.Id], curDoc.Id)
-			nsw.links[curDoc.Id] = append(nsw.links[curDoc.Id], neighbor.Id)
+			nsw.Links[neighbor.Id] = append(nsw.Links[neighbor.Id], curDoc.Id)
+			nsw.Links[curDoc.Id] = append(nsw.Links[curDoc.Id], neighbor.Id)
 		}
-		if len(nsw.docs)%10000 == 0 {
-			fmt.Printf("NSW index insert count: [%v], cost time: [%v]\n", len(nsw.docs), time.Since(start))
-			start = time.Now()
+		if len(nsw.Docs)%10000 == 0 {
+			fmt.Printf("NSW index insert count: [%v], cost time: [%v]\n", len(nsw.Docs), time.Since(s1))
+			s1 = time.Now()
 		}
 	}
+	fmt.Printf("NSW build index cost time: [%v]\n", time.Since(start))
+	fmt.Printf("NSW insertion avg compution cnt: [%v]\n", int(nsw.ComputeCnt)/len(docs))
 	return nsw
 }
 
-func (n *NSW) SearchKNN(query []float32, k int) []*data.Doc {
+func (n *NSW) SearchKNN(query []float32, k int32) []*data.Doc {
 	/*
 		1. build a min heap named candidates, build a max heap(size: k) named results.
 		2. get an entry Node by random, put it to the candidates and results.
@@ -58,28 +69,31 @@ func (n *NSW) SearchKNN(query []float32, k int) []*data.Doc {
 	*/
 	visited := map[int32]struct{}{}
 	results, candidates := util.NewMaxHeap(), util.NewMinHeap()
-	entry := n.docs[rand.Int31n(int32(len(n.docs)))]
+	entry := n.Docs[rand.Int31n(int32(len(n.Docs)))]
 	entryEle := &data.Element{
 		Doc:      entry,
-		Distance: n.disFunc(entry.Vector, query),
+		Distance: n.DisFunc(entry.Vector, query),
 	}
 	candidates.Push(entryEle)
+	results.Push(entryEle)
+	visited[entry.Id] = struct{}{}
 	for candidates.Size() > 0 {
 		cur := candidates.Pop().(*data.Element)
-		if results.Size() > 0 && cur.Distance > results.Top().GetValue() {
+		if cur.Distance > results.Top().GetValue() {
 			break
 		}
-		for _, neighborIdx := range n.links[cur.Doc.Id] {
-			neighbor := n.docs[neighborIdx]
+		for _, neighborIdx := range n.Links[cur.Doc.Id] {
+			neighbor := n.Docs[neighborIdx]
 			if _, ok := visited[neighbor.Id]; ok {
 				continue
 			}
+			n.ComputeCnt++
 			visited[neighbor.Id] = struct{}{}
 			ele := &data.Element{
 				Doc:      neighbor,
-				Distance: n.disFunc(neighbor.Vector, query),
+				Distance: n.DisFunc(neighbor.Vector, query),
 			}
-			if results.Size() < k {
+			if results.Size() < int(k) {
 				results.Push(ele)
 				candidates.Push(ele)
 			} else if results.Top().GetValue() > ele.Distance {
@@ -88,7 +102,7 @@ func (n *NSW) SearchKNN(query []float32, k int) []*data.Doc {
 			}
 		}
 	}
-	topK := make([]*data.Doc, k)
+	topK := make([]*data.Doc, results.Size())
 	for i := len(topK) - 1; i >= 0; i-- {
 		doc := results.Pop().(*data.Element).Doc
 		topK[i] = doc
