@@ -259,10 +259,12 @@ func (h *HNSW) addNeighbor(neighbors []*Neighbor, newNeighbor *Neighbor, layer i
 	return h.selectHeuristicNeighborsFromMinHeap(minHeap, maxCnt)
 }
 
-func (h *HNSW) SearchKNN(query []float32, ef, k int32) []*data.Doc {
+func (h *HNSW) SearchKNN(query []float32, ef, k, ignoreLayer int32) []*data.Doc {
 	entryPoint := h.EntryPoint
-	for layer := h.MaxLayer; layer > 0; layer-- {
-		entryPoint = h.searchAtLayerWith1Ef(query, entryPoint, layer)
+	if ignoreLayer == 0 {
+		for layer := h.MaxLayer; layer > 0; layer-- {
+			entryPoint = h.searchAtLayerWith1Ef(query, entryPoint, layer)
+		}
 	}
 	result := h.searchAtLayer(query, entryPoint, ef, 0)
 	for result.Size() > int(k) {

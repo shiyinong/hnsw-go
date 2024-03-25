@@ -27,7 +27,7 @@ func buildHnsw() {
 	fmt.Printf("HNSW build index cost time: [%v]\n", time.Since(start))
 	fmt.Printf("HNSW insertion avg compution cnt: [%v]\n", int(hnswIdx.ComputeCnt)/len(docs))
 
-	nswIdx := nsw.BuildNSW(docs, int32(*nswF), disType)
+	nswIdx := nsw.BuildNSW(docs, int32(*nswF), int32(*nswW), disType)
 	testDocs := data.BuildAllDoc(int32(*dim), int32(*testCount))
 	bfRes := testBruteForce(docs, testDocs)
 	wrap := &hnsw_wrap.HnswWrap{
@@ -45,7 +45,7 @@ func testHnsw() {
 	hnswRes, nswRes := [][]*data.Doc{}, [][]*data.Doc{}
 	start := time.Now()
 	for _, doc := range wrap.TestData {
-		knn := wrap.Nsw.SearchKNN(doc.Vector, int32(*k))
+		knn := wrap.Nsw.SearchKNN(doc.Vector, int32(*k), int32(*nswM))
 		nswRes = append(nswRes, knn)
 	}
 	cost := time.Since(start).Milliseconds()
@@ -58,7 +58,7 @@ func testHnsw() {
 
 	start = time.Now()
 	for _, doc := range wrap.TestData {
-		knn := wrap.Hnsw.SearchKNN(doc.Vector, int32(*hnswEf), int32(*k))
+		knn := wrap.Hnsw.SearchKNN(doc.Vector, int32(*hnswEf), int32(*k), int32(*hnswIgnoreLayer))
 		hnswRes = append(hnswRes, knn)
 	}
 	cost = time.Since(start).Milliseconds()
@@ -113,12 +113,15 @@ var (
 	operation = flag.String("operation", "", "")
 
 	nswF = flag.Int("nsw_f", 20, "")
+	nswW = flag.Int("nsw_w", 2, "")
+	nswM = flag.Int("nsw_m", 2, "")
 
-	hnswM        = flag.Int("hnsw_m", 6, "")
-	hnswEf       = flag.Int("hnsw_ef", 64, "")
-	hnswEfCons   = flag.Int("hnsw_ef_cons", 32, "")
-	hnswMode     = flag.Int("hnsw_mode", 1, "")
-	hnswFilaPath = flag.String("hnsw_file_path", "./hnsw_8d.data", "")
+	hnswM           = flag.Int("hnsw_m", 6, "")
+	hnswEf          = flag.Int("hnsw_ef", 64, "")
+	hnswEfCons      = flag.Int("hnsw_ef_cons", 32, "")
+	hnswMode        = flag.Int("hnsw_mode", 1, "")
+	hnswFilaPath    = flag.String("hnsw_file_path", "./hnsw_8d.data", "")
+	hnswIgnoreLayer = flag.Int("hnsw_ignore_layer", 0, "")
 )
 
 func main() {

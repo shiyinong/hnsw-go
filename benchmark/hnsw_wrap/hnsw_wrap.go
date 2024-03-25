@@ -58,6 +58,7 @@ func SaveHnswWrap(wrap *HnswWrap, path string) {
 	}
 
 	util.WriteValue[int32](wrap.Nsw.F, writer)
+	util.WriteValue[int32](wrap.Nsw.W, writer)
 	for _, link := range wrap.Nsw.Links {
 		util.WriteValue[int32](int32(len(link)), writer)
 		for _, v := range link {
@@ -141,6 +142,7 @@ func LoadHnswWrap(path string) *HnswWrap {
 	}
 
 	nswF := util.ReadValue[int32](reader)
+	nswW := util.ReadValue[int32](reader)
 	nswLinks := make([][]int32, docSize)
 	for i := int32(0); i < docSize; i++ {
 		size := util.ReadValue[int32](reader)
@@ -201,6 +203,7 @@ func LoadHnswWrap(path string) *HnswWrap {
 			Docs:    docs,
 			Links:   nswLinks,
 			F:       nswF,
+			W:       nswW,
 			DisFunc: distance.FuncMap[distance.Type(disType)],
 		},
 		TestData: testData,
